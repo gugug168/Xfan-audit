@@ -1,0 +1,4 @@
+# 作者本人的历史快照（含他人账号与推文），不得发布
+seed-baseline.json
+*.log
+.DS_Store

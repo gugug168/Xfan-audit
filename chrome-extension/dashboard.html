@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X-Fan 铁粉与回访审计大屏 (v10 双榜版)</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card: #111827;
+      --card-hover: #1e293b;
+      --border: #1f2937;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --purple: #a855f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+    }
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 18px 22px;
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 16px;
+      margin-bottom: 20px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    }
+    .title-group h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .title-group .sub {
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+    .btn-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .btn {
+      padding: 8px 14px;
+      border-radius: 9px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: #1e293b;
+      color: #f8fafc;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover { background: #334155; }
+    .btn-primary {
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      border-color: #38bdf8;
+    }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-emerald {
+      background: linear-gradient(135deg, #059669, #10b981);
+      border-color: #34d399;
+    }
+    .btn-amber {
+      background: linear-gradient(135deg, #d97706, #f59e0b);
+      border-color: #fbbf24;
+      color: #0f172a;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .kpi-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .kpi-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .kpi-val {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .kpi-sub {
+      color: var(--muted);
+      font-size: 11.5px;
+      margin-top: 2px;
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+    .tab-btn {
+      padding: 9px 16px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: #1e293b;
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      background: var(--card);
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .filter-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      padding: 4px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: pointer;
+      background: #1e293b;
+      color: var(--muted);
+      border: 1px solid transparent;
+    }
+    .pill.active {
+      background: rgba(56, 189, 248, 0.15);
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.4);
+      font-weight: 600;
+    }
+    .search-input {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      min-width: 240px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    th, td {
+      padding: 11px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    th {
+      background: #0f172a;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    tr:hover td { background: rgba(30, 41, 59, 0.55); }
+    .tier-badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .tier-S { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.45); }
+    .tier-A { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); }
+    .tier-B { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); }
+    .tier-C { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
+    .user-link {
+      color: #f8fafc;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .user-link:hover { color: #38bdf8; text-decoration: underline; }
+    .sample-box {
+      margin-top: 6px;
+      padding: 6px 10px;
+      background: rgba(15, 23, 42, 0.75);
+      border-left: 3px solid #38bdf8;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .share-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 960px) {
+      .share-grid { grid-template-columns: 1fr; }
+    }
+    .panel-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+    }
+    textarea.tweet-box {
+      width: 100%;
+      min-height: 150px;
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px;
+      font: 13.5px/1.6 inherit;
+      resize: vertical;
+    }
+    canvas#poster-canvas {
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <div class="title-group">
+        <h1>
+          <span>⚡ X-Fan 铁粉与回访审计大屏</span>
+          <span id="me-badge" style="font-size:13px;padding:3px 10px;border-radius:99px;background:rgba(56,189,248,0.18);color:#38bdf8;">@—</span>
+          <span id="ver-badge" style="font-size:12px;padding:2px 8px;border-radius:6px;background:rgba(16,185,129,0.18);color:#34d399;border:1px solid rgba(16,185,129,0.35);">v—</span>
+        </h1>
+        <div class="sub" id="status-line">正在加载本地无限容量存储库...</div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btn-patrol-inc" title="依次巡检主帖/通知/回复/粉丝顶部，遇到已采过的历史ID连续3轮无新增即停（约90秒）">⚡ 90秒每日增量巡检</button>
+        <button class="btn" id="btn-patrol-full" title="全量翻页核对（约 3 到 6 分钟）：把粉丝/关注名单翻到底，并移除已取关的人（移出的人会存进 lists_removed，可恢复）。期间会占用一个 X 标签页">🔄 全量深采对账</button>
+        <button class="btn" id="btn-patrol-stop" style="display:none;background:#e11d48;border-color:#fb7185;">⏹ 停止巡检</button>
+        <label class="btn" style="margin:0;">
+          📥 导入合并 JSON
+          <input type="file" id="file-import" accept=".json" style="display:none;" />
+        </label>
+        <button class="btn" id="btn-export-json">📤 导出备份 JSON</button>
+      </div>
+    </div>
+
+    <div id="empty-guide" style="display:none;background:rgba(2,132,199,0.14);border:1px solid rgba(56,189,248,0.4);border-radius:12px;padding:16px 20px;margin-bottom:18px;">
+      <strong style="color:#38bdf8;font-size:15px;">👋 欢迎使用 X-Fan 铁粉与回访审计插件！</strong>
+      <div style="color:#cbd5e1;font-size:13px;margin-top:6px;">
+        检测到当前本地库尚无采集数据：首次使用请点击右上角 <b>「🔄 全量深采对账」</b> 自动建立历史基线（或点 <b>「📥 导入合并 JSON」</b> 导入已有备份）。建立基线后，每天只需点一次 <b>「⚡ 90秒每日增量巡检」</b> 即可极速追平！
+      </div>
+    </div>
+
+    <div class="kpi-grid" id="kpi-grid"></div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="return">🎯 榜一：受邀回访榜（主动出击 7 天内回访）</button>
+      <button class="tab-btn" data-tab="natural">🔥 榜二：自来水铁粉榜（未触达主动登门）</button>
+      <button class="tab-btn" data-tab="unfollow">🧹 未回关 / 白眼狼清理清单</button>
+      <button class="tab-btn" data-tab="share">🪐 铁粉圈圈图 & 荣誉海报生成</button>
+    </div>
+
+    <!-- 榜一 / 榜二 / 白眼狼共用过滤栏 -->
+    <div class="toolbar" id="table-toolbar">
+      <div class="filter-pills" id="tier-pills">
+        <span class="pill active" data-tier="ALL">全部</span>
+        <span class="pill" data-tier="S">S 档（核心铁粉）</span>
+        <span class="pill" data-tier="A">A 档（高频互访）</span>
+        <span class="pill" data-tier="B">B 档（浅层互动）</span>
+        <span class="pill" data-tier="C">C 档（低频）</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <input type="text" class="search-input" id="search-input" placeholder="搜索 @用户名 / 昵称 / 评论内容..." />
+        <button class="btn" id="btn-export-csv" style="padding:7px 12px;font-size:12.5px;">📊 导出当前表 CSV</button>
+      </div>
+    </div>
+
+    <div id="table-container"></div>
+
+    <!-- Tab 4: 铁粉感谢卡海报 + 发推文案 + 众包推荐导出 -->
+    <div id="share-container" style="display:none;">
+      <div class="panel-card" style="margin-bottom:16px;padding:14px 18px;">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="color:#fbbf24;font-size:12.5px;font-weight:700;">0. 画面样式：</span>
+              <div class="filter-pills" id="poster-layout-pills">
+                <span class="pill active" data-playout="circle_cards">🪐 同心圆「铁粉圈圈图」+ 荣誉卡片（推荐爆款）</span>
+                <span class="pill" data-playout="circle_only">⭕ 纯享同心圆「铁粉圈圈图」（大方图）</span>
+                <span class="pill" data-playout="cards_only">📋 经典双列荣誉榜卡片</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="color:var(--muted);font-size:12.5px;font-weight:600;">1. 出图榜单：</span>
+              <div class="filter-pills" id="poster-mode-pills">
+                <span class="pill active" data-pmode="return">🎯 只发「认真回访榜」（受邀回访）</span>
+                <span class="pill" data-pmode="natural">🔥 只发「自来水真爱榜」（主动登门）</span>
+                <span class="pill" data-pmode="both">🏆 双榜合体全貌图</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="color:var(--muted);font-size:12.5px;font-weight:600;">2. 档位范围：</span>
+              <div class="filter-pills" id="poster-tier-pills">
+                <span class="pill" data-ptier="S">🌟 只选 S 档</span>
+                <span class="pill active" data-ptier="SA">🏆 S + A 档</span>
+                <span class="pill" data-ptier="SAB">💎 S + A + B 档</span>
+                <span class="pill" data-ptier="ALL">📋 全部档位</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="color:var(--muted);font-size:12.5px;font-weight:600;">3. 前几名：</span>
+              <div class="filter-pills" id="poster-limit-pills">
+                <span class="pill" data-plimit="5">前 5 名</span>
+                <span class="pill" data-plimit="8">前 8 名</span>
+                <span class="pill" data-plimit="10">前 10 名</span>
+                <span class="pill" data-plimit="12">前 12 名</span>
+                <span class="pill" data-plimit="16">前 16 名</span>
+                <span class="pill active" data-plimit="20">前 20 名</span>
+                <span class="pill" data-plimit="30">前 30 名</span>
+                <span class="pill" data-plimit="999">不限人数(全上)</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:4px;margin-left:4px;">
+                <span style="color:var(--muted);font-size:12px;">自定义前</span>
+                <input type="number" id="poster-custom-limit" min="1" max="500" value="20" style="width:58px;background:#0f172a;color:#38bdf8;border:1px solid #334155;border-radius:6px;padding:4px 6px;font-size:12.5px;font-weight:700;text-align:center;" />
+                <span style="color:var(--muted);font-size:12px;">名</span>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-amber" id="btn-download-poster">💾 下载高清海报 PNG</button>
+            <button class="btn btn-emerald" id="btn-copy-tweet-top">📋 复制配套 @ 铁粉文案</button>
+          </div>
+        </div>
+
+        <!-- 海报文字与上榜人员卡片内容在线编辑器 -->
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;">
+            <div style="font-size:13px;font-weight:700;color:#38bdf8;">
+              ✏️ 海报标题与上榜名单/卡片内容修改（改字或勾选人员后，下方海报与 `@` 推文自动实时重绘）
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+              <button class="btn btn-amber" id="btn-clear-all-poster" style="padding:4px 10px;font-size:12px;" title="先把所有人取消勾选，然后你点谁的勾，谁就立刻加进海报！">⬜ 清空重选（我点谁谁上海报）</button>
+              <button class="btn btn-emerald" id="btn-select-all-poster" style="padding:4px 10px;font-size:12px;">✅ 全选当前档位</button>
+              <button class="btn" id="btn-toggle-editor" style="padding:4px 10px;font-size:12px;">🔽 展开/收起人员明细微调</button>
+              <button class="btn" id="btn-reset-poster-custom" style="padding:4px 10px;font-size:12px;">🔄 恢复默认文案与全选</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:10px;">
+            <div>
+              <label style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px;">海报主标题（可直接修改）：</label>
+              <input type="text" id="poster-custom-title" class="search-input" style="width:100%;" placeholder="留空则使用当前榜单默认主标题..." />
+            </div>
+            <div>
+              <label style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px;">海报副标题说明（可直接修改）：</label>
+              <input type="text" id="poster-custom-sub" class="search-input" style="width:100%;" placeholder="留空则使用当前榜单默认副标题..." />
+            </div>
+            <div>
+              <label style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px;">海报底部签名栏（可直接修改）：</label>
+              <input type="text" id="poster-custom-footer" class="search-input" style="width:100%;" placeholder="留空则使用当前榜单默认底部签名..." />
+            </div>
+          </div>
+
+          <div id="poster-rows-editor-wrap" style="margin-top:12px;max-height:300px;overflow-y:auto;background:#0b1120;border:1px solid #1e293b;border-radius:10px;padding:10px;">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+              💡 <b>选人与卡片微调指南</b>：如果你想<b>自己挑几个人上海报</b>，请先点右上角 <b>「⬜ 清空重选（我点谁谁上海报）」</b>，然后勾谁谁就立刻出现在下方海报上！你也可以直接修改任意铁粉的「显示昵称」与「卡片互动文案」：
+            </div>
+            <div id="poster-rows-editor"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-card" style="margin-bottom:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 id="poster-panel-title" style="margin:0;font-size:16px;color:#fbbf24;">🎯 本周认真回访铁粉荣誉榜（1600px 超清大字带头像版）</h3>
+          <span id="avatar-load-status" style="color:var(--muted);font-size:12px;"></span>
+        </div>
+        <canvas id="poster-canvas" width="1600" height="1200" style="width:100%;max-width:1240px;display:block;margin:0 auto;"></canvas>
+      </div>
+
+      <div class="share-grid" style="grid-template-columns: 1.3fr 1fr;">
+        <div class="panel-card">
+          <h3 style="margin:0 0 10px;font-size:16px;color:#38bdf8;">📣 配套发推 `@` 铁粉裂变文案（随上方所选榜单自动切换）</h3>
+          <p style="color:var(--muted);font-size:12.5px;margin:0 0 10px;">
+            把上面下载的高清海报贴进推文，配下述文案直接 `@` 对应的铁粉。被公开点名感谢的铁粉极高概率前来转发评论，实现双向涨粉：
+          </p>
+          <textarea class="tweet-box" id="tweet-copy"></textarea>
+          <div style="display:flex;gap:10px;margin-top:10px;">
+            <button class="btn btn-emerald" id="btn-copy-tweet">📋 复制发推文案</button>
+            <a class="btn btn-primary" id="btn-go-compose" href="https://x.com/compose/post" target="_blank" style="text-decoration:none;">🚀 去 X 发推贴图</a>
+          </div>
+        </div>
+        <div class="panel-card">
+          <h3 style="margin:0 0 8px;font-size:15px;color:#34d399;">🌐 众包「高价值 X 友红榜」脱敏推荐包</h3>
+          <p style="color:var(--muted);font-size:12.5px;margin:0 0 12px;">
+            仅导出你认证的 S/A 档铁粉 `@handle`、头像链接、档位与原创帖互动次数（<strong>绝不包含任何私密推文或关注黑名单</strong>），可直接用于汇总全网高回访 X 友公共红榜：
+          </p>
+          <button class="btn" id="btn-export-recommend">📤 导出 S/A 档推荐签名包 (.json)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="merge-core.js"></script>
+  <script src="scorer.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

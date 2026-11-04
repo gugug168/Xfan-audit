@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "X-Fan 铁粉与回访审计 (v10 双榜版)",
+  "version": "1.7.1",
+  "description": "零额外请求、纯本地审计 X(Twitter) 受邀回访榜 + 自来水铁粉榜 + 未回关清理 + 手动触发的 90 秒增量巡检与铁粉海报生成。",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://pbs.twimg.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开 X-Fan 双榜审计大屏"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "page-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

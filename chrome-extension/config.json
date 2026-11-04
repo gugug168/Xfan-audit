@@ -1,0 +1,31 @@
+{
+  "return_visit": {
+    "window_days": 7,
+    "thread_decay": 0.68,
+    "combo": {
+      "original_reply": 40,
+      "original_like": 4,
+      "thread_reply": 12,
+      "chat_day": 1
+    },
+    "base": {
+      "follows_me": 5,
+      "mutual": 3
+    },
+    "tiers": {
+      "S": 70,
+      "A": 40,
+      "B": 15
+    },
+    "known_qt_authors": [
+      "elonmusk",
+      "thsottiaux",
+      "wenbuilds",
+      "bourneliu66",
+      "morefree10086"
+    ],
+    "_说明": "v10 双榜评分参数。original_reply=他回到我原创帖（每帖）、original_like=他点赞我原创帖（每帖）、thread_reply=我帖子下多轮（每条，同帖第2条起×thread_decay）、chat_day=别人串里聊天（每天）。known_qt_authors 是引用推文原作者名单：通知里误抓的这些账号会被剥离，不当作点赞者。Python 与 scorer.js 读同一份。",
+    "week_tz_offset_hours": 8,
+    "_week_说明": "本周=自然周，从周一 00:00 起，按 tz_offset 小时换算时区。week_earned 只统计本周发生的回应事件得分，不含基础分；累计分不受影响。"
+  }
+}
