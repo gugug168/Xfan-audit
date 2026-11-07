@@ -85,6 +85,7 @@
       </div>
       <div id="xfan-ext-body" style="margin-top:6px;">
         <div id="xfan-ext-counts" style="color:#cbd5e1;font-size:11.5px;margin-bottom:6px;">正在同步本地库...</div>
+        <div id="xfan-ext-cover" style="display:none;color:#f59e0b;font-size:11px;margin-bottom:6px;"></div>
         <div id="xfan-ext-patrol-msg" style="display:none;color:#fbbf24;font-size:11px;margin-bottom:6px;"></div>
         <div style="display:flex;gap:6px;">
           <button id="xfan-btn-inc" style="flex:1;padding:5px 8px;border:0;border-radius:6px;background:#0284c7;color:#fff;cursor:pointer;font-size:11.5px;font-weight:600;">⚡ 90s增量</button>
@@ -141,6 +142,19 @@
     if (meNode) meNode.textContent = lastStats.me ? "@" + lastStats.me : "";
     if (cntNode) {
       cntNode.textContent = `粉 ${lastStats.followers || 0} · 关 ${lastStats.following || 0} · 推 ${lastStats.tweets || 0} · 赞 ${lastStats.likes || 0}`;
+    }
+    // 覆盖率告警：只有拿到主页总数、且明显不齐时才显示。取不到总数就不吓人。
+    const coverNode = badgeEl.querySelector("#xfan-ext-cover");
+    if (coverNode) {
+      const pf = Number(lastStats.profile_followers) || 0;
+      const cov = Number(lastStats.followers_coverage) || 0;
+      if (pf > 0 && cov < 90) {
+        coverNode.style.display = "block";
+        coverNode.textContent = `⚠ 名单只覆盖 ${cov}%（${lastStats.followers} / ${pf}）`;
+      } else {
+        coverNode.style.display = "none";
+        coverNode.textContent = "";
+      }
     }
     if (incBtn) {
       incBtn.textContent = patrolRunning ? "⏹ 停止巡检" : "⚡ 90s增量";

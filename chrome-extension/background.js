@@ -30,6 +30,10 @@ function emptyDb() {
     users: {},
     tweets: {},
     likes: {},
+    // 疑似取关（只打标记，不删人）：kind -> handle -> {n, first, last}
+    suspects: { followers: {}, following: {} },
+    // 每次对账留一条，Service Worker 重启后还能回答「上次为什么没补齐」
+    audit_log: [],
   };
 }
 
@@ -71,14 +75,28 @@ async function flushSave() {
 }
 
 function getStatsSummary(db) {
+  const followers = Object.keys(db.lists.followers || {}).length;
+  const following = Object.keys(db.lists.following || {}).length;
+  // 主页显示的真实总数（由 page-hook 从页面 SSR 读进 users[me]）。取不到时是 0，
+  // 前端必须把它当成「未知」，不能当成「主页 0 粉」。
+  const meUser = (db.users && db.me && db.users[db.me]) || {};
+  const profileFollowers = Number(meUser.followers) || 0;
+  const profileFollowing = Number(meUser.following) || 0;
   return {
     me: db.me || "",
     updated_at: db.updated_at || "",
-    following: Object.keys(db.lists.following || {}).length,
-    followers: Object.keys(db.lists.followers || {}).length,
+    following,
+    followers,
     users: Object.keys(db.users || {}).length,
     tweets: Object.keys(db.tweets || {}).length,
     likes: Object.keys(db.likes || {}).length,
+    profile_followers: profileFollowers,
+    profile_following: profileFollowing,
+    // 覆盖率 = 已采名单 / 主页总数。0 表示还没拿到主页总数，不是覆盖 0%。
+    followers_coverage: profileFollowers > 0 ? Math.round((followers / profileFollowers) * 100) : 0,
+    following_coverage: profileFollowing > 0 ? Math.round((following / profileFollowing) * 100) : 0,
+    suspects_followers: Object.keys((db.suspects && db.suspects.followers) || {}).length,
+    suspects_following: Object.keys((db.suspects && db.suspects.following) || {}).length,
   };
 }
 
@@ -276,47 +294,62 @@ const RECONCILE_FLAT_ROUNDS = 12;
 
 // 用「完整扫到的名单」纠正库里的名单。库里的名单只增不减，这是唯一会删人的地方。
 // 被移出的人不会真删，而是存进 db.lists_removed[kind][handle] = 移出时间，可以恢复。
+const AUDIT_LIMIT = 60;
+
+// 每次对账留一条审计记录：Service Worker 重启后仍能回答「上次为什么没补齐」。
+function pushAudit(db, entry) {
+  if (!Array.isArray(db.audit_log)) db.audit_log = [];
+  db.audit_log.push(Object.assign({ at: new Date().toISOString() }, entry));
+  if (db.audit_log.length > AUDIT_LIMIT) db.audit_log = db.audit_log.slice(-AUDIT_LIMIT);
+}
+
 async function applyReconcile(kind, seen, reachedEnd) {
   const label = kind === "followers" ? "粉丝" : "关注";
   const db = await getDb();
   if (!db.lists_removed) db.lists_removed = { followers: {}, following: {} };
   if (!db.lists_removed[kind]) db.lists_removed[kind] = {};
+  if (!db.suspects) db.suspects = { followers: {}, following: {} };
+  if (!db.suspects[kind]) db.suspects[kind] = {};
 
   // X 资料页显示的总数：由页面采集写进自己账号的用户资料里
   const meUser = (db.users && db.me && db.users[db.me]) || {};
   const expected = Number(kind === "followers" ? meUser.followers : meUser.following) || 0;
+  const before = Object.keys(db.lists[kind] || {}).length;
 
-  const r = XFanMerge.reconcileList(db.lists[kind], seen, {
-    complete: reachedEnd,
-    expectedCount: expected,
-  });
+  // v1.8：只增不减。扫到多少补多少；只有确认到底才判定「谁不在了」，且只标记不删除。
+  const r = XFanMerge.reconcileList(db.lists[kind], seen, { complete: reachedEnd });
 
   if (!r.applied) {
-    const why = {
-      incomplete: "没有确认翻到名单底部",
-      empty: "没有看到任何人（页面可能没加载出来）",
-      too_few_vs_db: `只看到 ${r.seen} 人，不到库里 ${r.before} 人的 70%`,
-      too_few_vs_profile: `只看到 ${r.seen} 人，不到主页显示的 ${expected} 人的 90%`,
-    }[r.reason] || r.reason;
-    return `⚠ ${label}名单未对账（${why}），库里的名单没有改动`;
+    const why = r.reason === "empty" ? "页面没加载出任何人" : r.reason;
+    pushAudit(db, { kind, applied: false, reason: why, seen: r.seen, before, after: before, expected, added: 0, suspects: 0, complete: reachedEnd });
+    await flushSave();
+    return `⚠ ${label}名单没动（${why}）`;
   }
 
   const now = new Date().toISOString();
-  r.removed.forEach((h) => { db.lists_removed[kind][h] = now; });
-  // 重新出现的人要从「已移出」里拿掉。
-  // 不能只清 r.added：翻页过程中 mergeBatch 已经把新面孔追加进了 db.lists，
-  // 到对账时这些人已经在「当前名单」里，不再算 added，只清 added 会让回关的人永远挂在 lists_removed 里。
-  seen.forEach((h) => { delete db.lists_removed[kind][h]; });
+  // 又出现的人：从「已移出」和「疑似取关」里清掉（回关 / 只是没翻到的，不能一直背着标记）
+  seen.forEach((h) => {
+    delete db.lists_removed[kind][h];
+    delete db.suspects[kind][h];
+  });
   db.lists[kind] = r.next;
+  r.suspects.forEach((h) => {
+    const prev = db.suspects[kind][h] || {};
+    db.suspects[kind][h] = { n: (prev.n || 0) + 1, first: prev.first || now, last: now };
+  });
+  const after = Object.keys(r.next).length;
+
+  pushAudit(db, { kind, applied: true, seen: r.seen, before, after, expected, added: r.added.length, suspects: r.suspects.length, complete: reachedEnd });
   await flushSave();
-  // 没取到主页显示的总数时，第三道保护闸没有生效：必须如实说明，不能悄悄当作通过
-  const note = expected > 0 ? "" : "（未能取得主页显示的总数，请自行核对）";
-  // 诊断：本轮扫到的人里，有多少没有 API 资料（用户记录的 id 为空）。
-  // 这类人只可能来自页面兜底扫描，不是 X 接口返回的名单条目；数量多说明有无关账号混入。
-  // 实测里名单比主页多出的数量正好与这个数吻合，所以直接报告，不再需要从库里反推。
-  const noApi = r.next ? Object.keys(r.next).filter((h) => !(db.users && db.users[h] && db.users[h].id)).length : 0;
-  const noApiNote = noApi > 0 ? `，其中 ${noApi} 人没有 API 资料（可能是页面推荐的无关账号）` : "";
-  return `✓ ${label}名单已对账：现有 ${r.seen} 人，移出 ${r.removed.length} 人，新增 ${r.added.length} 人${noApiNote}${note}`;
+
+  const cov = expected > 0
+    ? `，覆盖 ${Math.round((after / expected) * 100)}%（${after}/${expected}）`
+    : "（未取到主页总数，覆盖未知）";
+  const sus = r.suspects.length ? `，${r.suspects.length} 人本轮没出现（已标记疑似取关，未删除）` : "";
+  const skipNote = r.suspectsSkipped ? `，本轮只扫到 ${r.seen} 人（不足库里 ${before} 人的一半），不判定取关` : "";
+  const endNote = reachedEnd ? "" : "；未确认翻到底，本次不判定取关";
+  const low = expected > 0 && after < expected * 0.9;
+  return `${low ? "⚠" : "✓"} ${label}名单已更新：新增 ${r.added.length} 人，共 ${after} 人${cov}${sus}${skipNote}${endNote}`;
 }
 
 // 每次启动巡检拿一个唯一代号。停止后立刻重新开始时，旧循环可能还卡在 sleep 里：
@@ -428,11 +461,20 @@ async function runPatrol(mode = "incremental", preferTabId = null) {
     }
     if (finished) {
       const modeLabel = mode === "full" ? "全量深采" : "增量巡检";
-      // 对账结果必须让用户看到，尤其是「被保护闸拒绝」的情况
-      const detail = reconcileReport.length ? " " + reconcileReport.join("；") : "";
-      await broadcastPatrolStatus(`✅ ${modeLabel}已完成！${detail}`);
-      await sleep(reconcileReport.length ? 6000 : 1000);
-      await broadcastPatrolStatus("");
+      // 对账结果必须让用户看到，尤其是「被保护闸拒绝」的情况。
+      // 只要有一条 ⚠，主状态就不能再写 ✅ —— 否则用户会把「名单一行没改」读成「已经更新好了」。
+      // detail 里去掉每条自带的前导 ⚠，避免出现「⚠ 已完成 … ⚠ 粉丝…」的重复标记。
+      const hasWarn = reconcileReport.some((t) => /^⚠/.test(String(t)));
+      const detail = reconcileReport.length
+        ? " " + reconcileReport.map((t) => String(t).replace(/^⚠\s*/, "")).join("；")
+        : "";
+      await broadcastPatrolStatus(
+        hasWarn
+          ? `⚠ ${modeLabel}已完成，但名单仍未补齐：${detail}`
+          : `✅ ${modeLabel}已完成！${detail}`
+      );
+      // 不再 sleep(6s) 后清空：这条结果是「上次为什么没对账」的唯一记录，
+      // 6 秒就消失会让人只看到红按钮（真实反馈：以为卡死）。保留到下一轮巡检覆盖它。
       openDashboardTab();
     }
   } catch (err) {
@@ -442,6 +484,10 @@ async function runPatrol(mode = "incremental", preferTabId = null) {
     if (patrolRunId === runId) {
       patrolState.running = false;
       patrolState.currentTask = "";
+      // 复位必须再广播一次：上面所有状态广播都是在 running 还是 true 时发出的，
+      // 悬浮窗按 patrolRunning 渲染按钮，不补这一次就会永远停在「⏹ 停止巡检」。
+      // 复用当前 statusText，让「上次结果」留在悬浮窗里，不清空。
+      await broadcastPatrolStatus(patrolState.statusText || "");
     }
   }
 }
