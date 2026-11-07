@@ -248,10 +248,17 @@
    * 返回 { applied, reason, before, seen, next, removed, added }。
    * applied=false 时 reason 是：incomplete | empty | too_few_vs_db | too_few_vs_profile
    */
+  // 名单对账（v1.8 语义）：只增不减。
+  //
+  // 旧语义是「用本轮扫到的快照替换整张名单」，前提是一次能扫全。实测 X 单次只给
+  // 400/200 人（约 20/10 页）就停，于是 70%/90% 两道闸永远拒绝，用户永远补不齐。
+  // 现在改成：
+  //   · next = 旧名单 ∪ 本轮看到的人 —— 只加不减，扫到多少就补多少
+  //   · 只有「确认翻到名单底部」的那一轮，才对「库里有、本轮没看到」的人打疑似取关标记
+  //   · 真正移出改成手动确认（沿用 lists_removed 的可恢复语义）
+  // 参数 opts.complete 只影响「要不要判定取关」，不再决定「能不能写库」。
   function reconcileList(current, seen, opts) {
     opts = opts || {};
-    var minRatio = opts.minRatio == null ? 0.7 : opts.minRatio;
-    var countRatio = opts.countRatio == null ? 0.9 : opts.countRatio;
 
     var curMap = {};
     Object.keys(current || {}).forEach(function (h) { var k = norm(h); if (k) curMap[k] = 1; });
@@ -261,19 +268,29 @@
     (seen || []).forEach(function (h) { var k = norm(h); if (k) seenMap[k] = 1; });
     var seenArr = Object.keys(seenMap);
 
-    var res = { applied: false, reason: "", before: cur.length, seen: seenArr.length,
-                next: null, removed: [], added: [] };
+    var res = { applied: false, reason: "", complete: !!opts.complete,
+                before: cur.length, seen: seenArr.length,
+                next: null, added: [], suspects: [], suspectsSkipped: false };
 
-    if (!opts.complete) { res.reason = "incomplete"; return res; }
+    // 一个人都没看到 = 页面没加载出来，宁可不动，也不能把空名单当成「大家都取关了」
     if (!seenArr.length) { res.reason = "empty"; return res; }
-    if (cur.length && seenArr.length < cur.length * minRatio) { res.reason = "too_few_vs_db"; return res; }
-    var expected = Number(opts.expectedCount) || 0;
-    if (expected > 0 && seenArr.length < expected * countRatio) { res.reason = "too_few_vs_profile"; return res; }
 
-    res.removed = cur.filter(function (h) { return !seenMap[h]; });
     res.added = seenArr.filter(function (h) { return !curMap[h]; });
     res.next = {};
+    cur.forEach(function (h) { res.next[h] = 1; });
     seenArr.forEach(function (h) { res.next[h] = 1; });
+
+    // 只有确认到底的那一轮才判定「谁不在了」；没到底就只补不判，避免把没翻到的人当成取关
+    if (opts.complete) {
+      var suspectMin = opts.suspectMinRatio == null ? 0.5 : opts.suspectMinRatio;
+      // 本轮扫到的人不到库里一半：说明这次根本没翻动（限流/页面没加载），
+      // 这时候「谁没出现」全是误报。宁可这一轮不判定，也不给用户一堆假取关。
+      if (!cur.length || seenArr.length >= cur.length * suspectMin) {
+        res.suspects = cur.filter(function (h) { return !seenMap[h]; });
+      } else {
+        res.suspectsSkipped = true;
+      }
+    }
     res.applied = true;
     return res;
   }

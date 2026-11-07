@@ -295,8 +295,9 @@
     <div class="kpi-grid" id="kpi-grid"></div>
 
     <div class="tabs">
-      <button class="tab-btn active" data-tab="return">🎯 榜一：受邀回访榜（主动出击 7 天内回访）</button>
-      <button class="tab-btn" data-tab="natural">🔥 榜二：自来水铁粉榜（未触达主动登门）</button>
+      <button class="tab-btn active" data-tab="return">🏆 永久累计 · 受邀回访榜</button>
+      <button class="tab-btn" data-tab="return-week">📅 本周 · 回访榜</button>
+      <button class="tab-btn" data-tab="natural">🔥 永久累计 · 自来水铁粉榜</button>
       <button class="tab-btn" data-tab="unfollow">🧹 未回关 / 白眼狼清理清单</button>
       <button class="tab-btn" data-tab="share">🪐 铁粉圈圈图 & 荣誉海报生成</button>
     </div>
@@ -337,6 +338,13 @@
                 <span class="pill active" data-pmode="return">🎯 只发「认真回访榜」（受邀回访）</span>
                 <span class="pill" data-pmode="natural">🔥 只发「自来水真爱榜」（主动登门）</span>
                 <span class="pill" data-pmode="both">🏆 双榜合体全貌图</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="color:var(--muted);font-size:12.5px;font-weight:600;">1.5 时间口径：</span>
+              <div class="filter-pills" id="poster-period-pills">
+                <span class="pill active" data-pperiod="cumulative">🏆 永久累计榜（全量历史）</span>
+                <span class="pill" data-pperiod="week">📅 本周榜（自然周）</span>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
@@ -412,7 +420,7 @@
 
       <div class="panel-card" style="margin-bottom:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <h3 id="poster-panel-title" style="margin:0;font-size:16px;color:#fbbf24;">🎯 本周认真回访铁粉荣誉榜（1600px 超清大字带头像版）</h3>
+          <h3 id="poster-panel-title" style="margin:0;font-size:16px;color:#fbbf24;">🎯 回访铁粉荣誉榜（口径由上方「时间口径」决定 · 1600px 超清大字带头像版）</h3>
           <span id="avatar-load-status" style="color:var(--muted);font-size:12px;"></span>
         </div>
         <canvas id="poster-canvas" width="1600" height="1200" style="width:100%;max-width:1240px;display:block;margin:0 auto;"></canvas>

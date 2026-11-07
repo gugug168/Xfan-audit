@@ -10,6 +10,9 @@
 
   let rawDb = null;
   let auditResult = null;
+  // 主页显示的真实粉丝/关注总数（来自 x.com 页面 SSR，由 page-hook 写进 users[me]）。
+  // 与「已采名单」是两个口径：名单只增不减、只含采过的人，不能拿它冒充主页数字。
+  let profileTotals = { followers: 0, following: 0 };
   let currentTab = "return";
   let currentTier = "ALL";
   let searchQuery = "";
@@ -17,6 +20,10 @@
   let posterMode = "return";     // "return" | "natural" | "both"
   let posterTierMode = "SA";     // "S" | "SA" | "SAB" | "ALL"
   let posterLimit = 20;          // 5 | 8 | 10 | 12 | 16 | 20 | 30 | 999 | 自定义数字
+  // 双时间口径：永久累计（score 只增不减，默认） / 本周（自然周 week_earned）
+  let posterPeriod = "cumulative";   // "cumulative" | "week"
+  let weekMeta = { start: "", latest: "" };
+  let weekBoards = { return: [], natural: [] };
 
   // 海报全局文字自定义与单人卡片自定义缓存
   const posterTextCustom = {
@@ -24,7 +31,7 @@
     sub: "",
     footer: "",
   };
-  // key: `${boardType}:${account}` -> { excluded: boolean, name: string, detail: string }
+  // key: `${boardType}:${account}` -> { excluded, pinned, name, detail, detailCustom }
   const userCardCustom = new Map();
 
   // 内存头像缓存：handle -> ImageBitmap | "loading" | "failed"
@@ -78,6 +85,60 @@
     return `<div style="font-size:11px;font-weight:600;color:#34d399;" title="本周（周一 0 点起）新增的互动得分，不含基础分">本周 +${fmtNum(v)}</div>`;
   }
 
+  // ---- 双时间口径榜单：永久累计 vs 本周 ----
+  // 本周分直接复用 scorer.js 已算好的 week_earned / week_visits，只做视图派生：
+  // 不重算分数、不改算分引擎，Python 侧 parity 测试不受影响。
+  function weekTierOf(score) {
+    if (score >= cfgNum(["tiers", "S"], 70)) return "S";
+    if (score >= cfgNum(["tiers", "A"], 40)) return "A";
+    if (score >= cfgNum(["tiers", "B"], 15)) return "B";
+    return "C";
+  }
+
+  // 「现在」取库里最晚事件时间（与 scorer.js R28a 同口径），按 UTC+8 求所在自然周的周一。
+  function computeWeekMeta(db) {
+    let latest = 0;
+    const bump = (v) => {
+      const ms = Date.parse(v);
+      if (ms > latest) latest = ms;
+    };
+    // 只取「互动事件」时间：普通原创/引用推文的发布时间不是互动，不能拿来定「现在」。
+    // scorer.js 的 latestMs 也只来自回复/点赞事件，两边口径必须一致，否则跨周时本周起点会错。
+    Object.values((db && db.tweets) || {}).forEach((t) => {
+      if (!t) return;
+      const isReply = t.is_reply === true || t.is_reply === "True" || Boolean(t.reply_to_post || t.reply_to_user);
+      if (isReply) bump(t.created_at);
+    });
+    Object.values((db && db.likes) || {}).forEach((l) => l && bump(l.ts));
+    if (!latest) return { start: "", latest: "" };
+    const local = new Date(latest + 8 * 3600000);
+    const dow = (local.getUTCDay() + 6) % 7;
+    local.setUTCDate(local.getUTCDate() - dow);
+    local.setUTCHours(0, 0, 0, 0);
+    return {
+      start: `${local.getUTCFullYear()}/${String(local.getUTCMonth() + 1).padStart(2, "0")}/${String(local.getUTCDate()).padStart(2, "0")}`,
+      startMs: local.getTime() - 8 * 3600000,
+      latest: new Date(latest + 8 * 3600000).toISOString().slice(0, 16).replace("T", " "),
+    };
+  }
+
+  // 只列本周有新增互动的人；主分数=本周新增分，档位按同一阈值对周分重算，累计分仅作参考。
+  function buildWeekBoard(rows) {
+    return (rows || [])
+      .filter((r) => Number(r.week_earned || 0) > 0)
+      .map((r) => Object.assign({}, r, {
+        cum_score: r.score,
+        cum_tier: r.tier,
+        period: "week",
+        score: Number(r.week_earned),
+        tier: weekTierOf(Number(r.week_earned)),
+        visits: Number(r.week_visits || 0),
+        // 证据列只留本周发生的互动，避免本周榜里冒出上周记录
+        samples: (r.samples || []).filter((x) => !weekMeta.startMs || Date.parse(x.ts) >= weekMeta.startMs),
+      }))
+      .sort((a, b) => b.score - a.score || b.cum_score - a.cum_score || (a.account < b.account ? -1 : 1));
+  }
+
   function escapeHtml(s) {
     return String(s || "")
       .replace(/&/g, "&amp;")
@@ -125,12 +186,21 @@
     if (!targetDb.likes) targetDb.likes = {};
     targetDb.me = targetDb.me || seed.me || "";
 
-    // 名单是「某一时刻的快照」，不是只增的历史事实：库里已有名单时，seed 里的旧名单
-    // 会把早已取关/回关的人重新加回来。所以只在对应名单为空（新装）时才采用 seed 的。
+    // 名单是「某一时刻的快照」，不是只增的历史事实：库里名单已经够全的时候，
+    // seed 里的旧名单会把早已取关/回关的人重新加回来，所以默认不采用。
+    //
+    // 但反过来也有坑：库被重置过、或新装只采到几百人时，如果一律跳过，就永远补不齐
+    // （真实案例：库里 1320，主页 2243，seed 里有 2057，却因为「库里非空」被整段跳过）。
+    // 所以改成：库里名单不足 seed 的 80% 时，按**并集**补齐（只加不删）；
+    // 达到 80% 以上则保持原样，尊重后续的取关。
     ["following", "followers"].forEach((k) => {
       if (!targetDb.lists[k]) targetDb.lists[k] = {};
-      if (Object.keys(targetDb.lists[k]).length > 0) return;
-      Object.keys((seed.lists && seed.lists[k]) || {}).forEach((h) => {
+      const seedList = (seed.lists && seed.lists[k]) || {};
+      const inc = Object.keys(seedList).length;
+      if (!inc) return;
+      const cur = Object.keys(targetDb.lists[k]).length;
+      if (cur >= inc * 0.8) return;
+      Object.keys(seedList).forEach((h) => {
         targetDb.lists[k][h.toLowerCase()] = 1;
       });
     });
@@ -217,6 +287,11 @@
 
       rawDb = db;
       const me = rawDb.me || "";
+      const meProfile = (rawDb.users && me && rawDb.users[me]) || {};
+      profileTotals = {
+        followers: Number(meProfile.followers) || 0,
+        following: Number(meProfile.following) || 0,
+      };
       meBadge.textContent = me ? "@" + me : "未识别账号（请先在 x.com 打开一次你的主页）";
       // 评分参数从扩展包内的 config.json 读（与 Xfan-audit/config.json 由测试锁死），
       // 否则 known_qt_authors 会在 JS 与 Python 两侧各存一份、改一边等于没改
@@ -227,6 +302,12 @@
         } catch (e) {}
       }
       auditResult = window.XFanScorer.auditFromRawDb(rawDb, me, runtimeCfg);
+      // 双口径在评分后一次性派生，纯内存，不写库
+      weekMeta = computeWeekMeta(rawDb);
+      weekBoards = {
+        return: buildWeekBoard(auditResult.returnBoard),
+        natural: buildWeekBoard(auditResult.naturalBoard),
+      };
 
       const s = auditResult.summary;
       const emptyGuide = document.getElementById("empty-guide");
@@ -240,10 +321,16 @@
       const updatedStr = rawDb.updated_at
         ? new Date(rawDb.updated_at).toLocaleString("zh-CN")
         : "刚刚";
+      // 审计记录：库里有 audit_log 就显示最近一次粉丝对账「扫到多少人 / 主页多少人」，
+      // 这样「上次为什么没补齐」在界面上可直接回答，不用翻日志。
+      const lastAudit = (rawDb.audit_log || []).filter((e) => e.kind === "followers").slice(-1)[0];
+      const auditStr = lastAudit
+        ? ` · 上次对账 ${new Date(lastAudit.at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}：扫到 ${lastAudit.seen}${lastAudit.expected ? "/" + lastAudit.expected : ""} 人`
+        : "";
       statusLine.textContent =
         res && res.patrolState && res.patrolState.running && res.patrolState.statusText
           ? res.patrolState.statusText
-          : `本地无限存储库最后更新：${updatedStr} · 已采推文 ${s.total_tweets} 条（含你的原创主帖 ${s.my_original_posts} 篇）· 原创帖净点赞 ${s.clean_orig_likes} 次`;
+          : `本地无限存储库最后更新：${updatedStr} · 已采推文 ${s.total_tweets} 条（含你的原创主帖 ${s.my_original_posts} 篇）· 原创帖净点赞 ${s.clean_orig_likes} 次${auditStr}`;
 
       renderKpis(s);
       renderCurrentView();
@@ -251,16 +338,27 @@
   }
 
   function renderKpis(s) {
+    const hasProfile = profileTotals.followers > 0;
+    const profileFollowers = hasProfile ? profileTotals.followers.toLocaleString("zh-CN") : "—";
+    // 覆盖率 = 已采名单 / 主页总数。取不到主页总数时显示「未知」，不能写成 0%。
+    const cov = hasProfile ? Math.round((s.followers / profileTotals.followers) * 100) : 0;
+    // 名单可能比主页多（含已取关但仍在库里的残留），这时覆盖率会 >100%，
+    // 直接把差值写出来，用户不用自己算「为什么多出来」。
+    const over = hasProfile ? s.followers - profileTotals.followers : 0;
+    const covText = hasProfile ? ` · 覆盖 ${cov}%${over > 0 ? `（+${over}）` : ""}` : "";
+    const covColor = hasProfile && cov < 90 ? "#f59e0b" : "var(--muted)";
     kpiGrid.innerHTML = `
       <div class="kpi-card">
-        <div class="kpi-label">互关好友 / 粉丝总数</div>
+        <div class="kpi-label">互关好友 / 已采粉丝</div>
         <div class="kpi-val" style="color:#38bdf8;">${s.mutual} <span style="font-size:14px;color:var(--muted);">/ ${s.followers}</span></div>
-        <div class="kpi-sub">关注 ${s.following} 人 · 互关率 ${s.following ? Math.round((s.mutual / s.following) * 100) : 0}%</div>
+        <div class="kpi-sub">关注 ${s.following} · 互关率 ${s.following ? Math.round((s.mutual / s.following) * 100) : 0}%</div>
+        <div class="kpi-sub" style="color:${covColor};">主页粉丝 ${profileFollowers}${covText}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">榜一：受邀回访 S / A 档</div>
         <div class="kpi-val" style="color:#fbbf24;">${s.return_counts.S} <span style="font-size:15px;color:#34d399;">/ ${s.return_counts.A} 人</span></div>
-        <div class="kpi-sub">主动出击 7 天内回访原创帖 · 共 ${s.return_counts.total} 人</div>
+        <div class="kpi-sub">永久累计口径 · 主动出击 7 天内回访原创帖 · 共 ${s.return_counts.total} 人</div>
+        <div class="kpi-sub" style="color:#34d399;">📅 本周榜 ${weekBoards.return.length} 人 · 自 ${weekMeta.start || "—"} 起</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">榜二：自来水铁粉 S / A 档</div>
@@ -297,6 +395,8 @@
 
     if (currentTab === "return") {
       renderReturnTable(auditResult.returnBoard);
+    } else if (currentTab === "return-week") {
+      renderWeekTable(weekBoards.return);
     } else if (currentTab === "natural") {
       renderNaturalTable(auditResult.naturalBoard);
     } else if (currentTab === "unfollow") {
@@ -341,6 +441,7 @@
   }
 
   function homeVisitPosterTag(r, boardType) {
+    if (r.period === "week") return ""; // 主页到访是累计量，不挂在本周榜卡片上
     const nPosts = r.posts_touched || 0;
     const cameOrig = Boolean(
       r.came_to_my_post ||
@@ -359,6 +460,11 @@
   }
 
   function defaultCardDetail(r, boardType) {
+    // 本周榜行的明细字段仍是累计值，直接写「评原帖 N 篇」会把累计数伪装成周数据。
+    // 周口径只报确实存在的量：本周分、本周计分动作数、累计分作对照。
+    if (r.period === "week") {
+      return `本周 +${r.score.toFixed(1)} 分 · 本周计分动作 ${r.visits} 次 · 累计 ${Number(r.cum_score).toFixed(1)} 分`;
+    }
     const tag = homeVisitPosterTag(r, boardType);
     if (boardType === "return") {
       return `评原帖 ${r.attr_orig} 篇 · 多轮 ${r.thread} 条 · 原帖赞 ${r.like} 篇${tag}`;
@@ -446,6 +552,53 @@
     `;
     tableContainer.innerHTML = html;
     bindTablePosterCheckboxes("return");
+  }
+
+  // 📅 本周榜：只列本周有新增互动的人，按本周新增分排序、按同一阈值重新分档
+  function renderWeekTable(rows) {
+    const list = filterRows(rows);
+    const scope = weekMeta.start
+      ? `自然周 UTC+8 周一 ${weekMeta.start} 00:00 起（按库内最晚事件 ${weekMeta.latest} 定周）`
+      : "本周（库内暂无事件时间）";
+    const note = `
+      <div style="margin:0 0 12px;padding:10px 14px;border:1px solid rgba(52,211,153,.35);
+                  background:rgba(16,185,129,.07);border-radius:10px;color:#cbd5e1;font-size:12.5px;line-height:1.7;">
+        <b style="color:#34d399;">📅 本周榜口径</b> · ${scope}<br>
+        只列本周有新增互动的 <b>${rows.length}</b> 人；主分数 = <b>本周新增分</b>（不含基础分），档位按同一阈值对周分重算；
+        <b>累计分</b>与「主页到访」均为累计口径、不参与排名；证据列只覆盖<b>评论类</b>互动（每人最多 6 条样本），
+        点赞/闲聊没有文本样本，本周无评论样本时会留空。想看全量历史请切到「🏆 永久累计 · 受邀回访榜」。
+      </div>`;
+    const html = `
+      <table>
+        <thead>
+          <tr>
+            <th style="width:46px;">排名</th>
+            <th>账号 / 昵称</th>
+            <th>本周档位</th>
+            <th>本周分</th>
+            <th>本周计分动作</th>
+            <th>累计分 / 档（参考）</th>
+            <th>主页到访（累计口径）</th>
+            <th>评论证据（本周）</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${list.map((r, idx) => `
+            <tr>
+              <td style="color:var(--muted);font-weight:600;">#${idx + 1}</td>
+              <td>${avatarHtml(r)}</td>
+              <td><span class="tier-badge tier-${r.tier}">${r.tier}</span></td>
+              <td><div style="font-weight:700;font-size:15px;color:#34d399;">+${r.score.toFixed(1)}</div></td>
+              <td style="font-weight:700;">${r.visits} 次</td>
+              <td style="color:var(--muted);">${Number(r.cum_score).toFixed(1)} <span class="tier-badge tier-${r.cum_tier}">${r.cum_tier}</span></td>
+              <td>${homeVisitHtml(r, "return")}</td>
+              <td>${(r.samples || []).length
+                ? (r.samples || []).slice(0, 2).map((x) => `<div class="sample-box">[${escapeHtml(x.kind)} ${(x.ts || "").slice(5, 16)}] ${escapeHtml(x.text)}</div>`).join("")
+                : `<span style="color:var(--muted);font-size:11.5px;">— 本周无评论样本（本周分可能来自点赞/闲聊）</span>`}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+    tableContainer.innerHTML = note + html;
   }
 
   function renderNaturalTable(rows) {
@@ -653,16 +806,15 @@
     const key = `${boardType}:${r.account}`;
     let ov = userCardCustom.get(key);
     if (!ov) {
-      ov = {
-        excluded: false,
-        pinned: false,
-        name: r.name || r.account,
-        detail: defaultCardDetail(r, boardType),
-      };
+      ov = { excluded: false, pinned: false, name: r.name || r.account };
       userCardCustom.set(key, ov);
     } else if ((!ov.name || ov.name === r.account) && r.name) {
       ov.name = r.name;
     }
+    // 自动详情不缓存：按当前行（含口径）实时生成。
+    // 否则从「永久累计」切到「本周」时，卡片仍显示上一种口径的「评原帖 N 篇」累计数。
+    // 用户手动改过的文案（detailCustom）保留，不被重算覆盖。
+    if (!ov.detailCustom) ov.detail = defaultCardDetail(r, boardType);
     return ov;
   }
 
@@ -688,7 +840,9 @@
 
   function ensureUserIncludedInPosterFilter(boardType, account) {
     if (!auditResult) return;
-    const rows = boardType === "return" ? auditResult.returnBoard : auditResult.naturalBoard;
+    const rows = posterPeriod === "week"
+      ? (weekBoards[boardType] || auditResult.returnBoard)
+      : boardType === "return" ? auditResult.returnBoard : auditResult.naturalBoard;
     const cands = filterByPosterTier(rows, boardType);
     const nonExcluded = cands.filter((r) => !getCardOverride(boardType, r).excluded);
     const pos = nonExcluded.findIndex((r) => r.account === account);
@@ -748,11 +902,11 @@
     ctx.textAlign = "right";
     ctx.fillStyle = isS ? "#fbbf24" : "#34d399";
     ctx.font = "bold 26px 'Segoe UI', sans-serif";
-    ctx.fillText(`${r.score.toFixed(1)} 分`, rightX, y + 44);
+    ctx.fillText(`${r.period === "week" ? "本周 +" : "累计 "}${r.score.toFixed(1)} 分`, rightX, y + 44);
 
     ctx.fillStyle = isS ? "#fde68a" : "#6ee7b7";
     ctx.font = "bold 15px 'Microsoft YaHei', sans-serif";
-    ctx.fillText(`${r.tier} 档铁粉`, rightX, y + 72);
+    ctx.fillText(`${r.period === "week" ? "本周 " : ""}${r.tier} 档铁粉`, rightX, y + 72);
     ctx.restore();
   }
 
@@ -765,10 +919,10 @@
 
     const groups = [];
     if (posterMode === "return" || posterMode === "both") {
-      groups.push({ boardType: "return", label: "🎯 认真回访榜候选", rows: candReturn, actMap: actRetMap });
+      groups.push({ boardType: "return", label: posterPeriod === "week" ? "📅 本周回访榜候选" : "🎯 认真回访榜候选", rows: candReturn, actMap: actRetMap });
     }
     if (posterMode === "natural" || posterMode === "both") {
-      groups.push({ boardType: "natural", label: "🔥 自来水真爱榜候选", rows: candNatural, actMap: actNatMap });
+      groups.push({ boardType: "natural", label: posterPeriod === "week" ? "📅 本周自来水榜候选" : "🔥 自来水真爱榜候选", rows: candNatural, actMap: actNatMap });
     }
 
     editorEl.innerHTML = groups
@@ -837,6 +991,7 @@
         const ov = userCardCustom.get(key);
         if (ov) {
           ov.detail = inp.value;
+          ov.detailCustom = true;
           drawPosterCanvasAndCopyOnly();
         }
       });
@@ -847,8 +1002,11 @@
     if (!auditResult) {
       return { candReturn: [], candNatural: [], activeReturn: [], activeNatural: [] };
     }
-    const candReturn = filterByPosterTier(auditResult.returnBoard, "return");
-    const candNatural = filterByPosterTier(auditResult.naturalBoard, "natural");
+    // 海报口径切换：本周榜用派生视图，永久累计用原始 board
+    const rRows = posterPeriod === "week" ? weekBoards.return : auditResult.returnBoard;
+    const nRows = posterPeriod === "week" ? weekBoards.natural : auditResult.naturalBoard;
+    const candReturn = filterByPosterTier(rRows, "return");
+    const candNatural = filterByPosterTier(nRows, "natural");
     const activeReturn = candReturn
       .filter((r) => !getCardOverride("return", r).excluded)
       .slice(0, posterLimit);
@@ -1204,18 +1362,22 @@
           ? "同心圆圈圈图 + 荣誉卡片"
           : "超清荣誉卡片";
 
+      // 口径标签同时用于海报标题、副标题与发推文案：避免「本周」出现在累计榜上
+      const periodTag = posterPeriod === "week"
+        ? `本周（${weekMeta.start || "本周"} 起）`
+        : "永久累计";
       if (panelTitle) {
         panelTitle.textContent = isRet
-          ? `🪐 榜一：受邀回访铁粉 ${layoutTag}（${tierDesc} · 已选 ${list.length} 人 · 1600×${H}）`
-          : `🪐 榜二：自来水真爱铁粉 ${layoutTag}（${tierDesc} · 已选 ${list.length} 人 · 1600×${H}）`;
+          ? `🪐 榜一：受邀回访铁粉 · ${periodTag} ${layoutTag}（${tierDesc} · 已选 ${list.length} 人 · 1600×${H}）`
+          : `🪐 榜二：自来水真爱铁粉 · ${periodTag} ${layoutTag}（${tierDesc} · 已选 ${list.length} 人 · 1600×${H}）`;
       }
 
       const defaultTitle = isRet
-        ? `@${me} · 本周「认真回访」真铁粉同心圆与荣誉榜 (TOP ${list.length})`
-        : `@${me} · 本周「主动登门」自来水真爱铁粉圈与荣誉榜 (TOP ${list.length})`;
+        ? `@${me} · ${periodTag}「认真回访」真铁粉同心圆与荣誉榜 (TOP ${list.length})`
+        : `@${me} · ${periodTag}「主动登门」自来水真爱铁粉圈与荣誉榜 (TOP ${list.length})`;
       const defaultSub = isRet
-        ? `实盘互动审计 (${today}) · 我去外部互动后 7 天内进入我主页认真回访原创主帖并评论/点赞的高价值老铁`
-        : `实盘互动审计 (${today}) · 未受外部触达、主动登门评论与点赞我原创主帖的自来水真爱老铁`;
+        ? `实盘互动审计 (${today}) · ${periodTag}口径 · 我去外部互动后 7 天内进入我主页认真回访原创主帖并评论/点赞的高价值老铁`
+        : `实盘互动审计 (${today}) · ${periodTag}口径 · 未受外部触达、主动登门评论与点赞我原创主帖的自来水真爱老铁`;
       const defaultFooter = `Powered by @${me} X-Fan 铁粉双榜审计插件 v10 · 只认原创主帖真实评论与净点赞 · 强烈推荐大家互关以上高回访创作者`;
 
       const titleInput = document.getElementById("poster-custom-title");
@@ -1269,10 +1431,10 @@
       // 联动发推文案（只 @ 当前勾选上榜的人！）
       const mentions = list.map((x) => `@${x.account}`).join(" ");
       document.getElementById("tweet-copy").value = isRet
-        ? `用 X-Fan 铁粉审计插件盘点了近期「有来有往、认真回访」的真铁粉圈圈图与荣誉榜（我去串门后 7 天内进我主页回访原创帖评论/点赞）：\n\n` +
+        ? `用 X-Fan 铁粉审计插件盘点了${periodTag}「有来有往、认真回访」的真铁粉圈圈图与荣誉榜（我去串门后 7 天内进我主页回访原创帖评论/点赞）：\n\n` +
           `🎯 认真回访铁粉榜（${tierDesc} TOP ${list.length}）：\n${mentions}\n\n` +
           `真心感谢各位老铁的每一次高质量回访与走心交流！强烈推荐大家关注这批最讲义气的高回访真创作者 👇`
-        : `用 X-Fan 铁粉审计插件盘点了近期「未受触达、主动登门」的自来水真爱铁粉圈圈图与荣誉榜（主动来我原创主帖下评论/点赞）：\n\n` +
+        : `用 X-Fan 铁粉审计插件盘点了${periodTag}「未受触达、主动登门」的自来水真爱铁粉圈圈图与荣誉榜（主动来我原创主帖下评论/点赞）：\n\n` +
           `🔥 自来水真爱铁粉榜（${tierDesc} TOP ${list.length}）：\n${mentions}\n\n` +
           `感谢各位老铁长期在原创帖下的主动支持与深度讨论！强烈推荐大家互关这批高质量创作者 👇`;
     } else {
@@ -1369,7 +1531,7 @@
         .map((x) => `@${x.account}`)
         .join(" ");
       document.getElementById("tweet-copy").value =
-        `用 X-Fan 铁粉双榜插件跑了一遍我近期的真实互动账本（只算原创帖评论和真点赞）：\n\n` +
+        `用 X-Fan 铁粉双榜插件跑了一遍我${periodTag}的真实互动账本（只算原创帖评论和真点赞）：\n\n` +
         `🎯 有来有往·认真回访铁粉榜：\n${retMentions}\n\n` +
         `🔥 未触达主动登门·自来水真爱榜：\n${natMentions}\n\n` +
         `感谢各位老铁长期在原创帖下的高质量交流！强烈推荐大家互关这批高回访真创作者 👇`;
@@ -1409,6 +1571,15 @@
       document.querySelectorAll("#poster-mode-pills .pill").forEach((p) => p.classList.remove("active"));
       pill.classList.add("active");
       posterMode = pill.getAttribute("data-pmode");
+      renderSharePosterAndCopy();
+    });
+  });
+
+  document.querySelectorAll("#poster-period-pills .pill").forEach((pill) => {
+    pill.addEventListener("click", () => {
+      document.querySelectorAll("#poster-period-pills .pill").forEach((p) => p.classList.remove("active"));
+      pill.classList.add("active");
+      posterPeriod = pill.getAttribute("data-pperiod") || "cumulative";
       renderSharePosterAndCopy();
     });
   });
@@ -1579,7 +1750,13 @@
     let headers = [];
     let csvRows = [];
     let filename = "";
-    if (currentTab === "return") {
+    if (currentTab === "return-week") {
+      headers = ["排名", "账号", "昵称", "本周档位", "本周新增分", "本周计分动作数", "累计总分", "累计档位", "本周起始", "主页链接"];
+      csvRows = filterRows(weekBoards.return).map((r, i) => [
+        i + 1, safe("@" + r.account), r.name, r.tier, r.score, r.visits, r.cum_score, r.cum_tier, weekMeta.start, safe(`https://x.com/${r.account}`)
+      ]);
+      filename = `return_visit_week_${new Date().toISOString().slice(0, 10)}.csv`;
+    } else if (currentTab === "return") {
       headers = ["排名", "账号", "昵称", "档位", "总分", "受邀评原创帖", "原帖多轮", "原创帖赞", "外部串闲聊", "翻过主页", "互关", "说明", "主页链接"];
       csvRows = filterRows(auditResult.returnBoard).map((r, i) => [
         i + 1, safe("@" + r.account), r.name, r.tier, r.score, r.attr_orig, r.thread, r.like, r.chat_days, r.browsed_home ? "是" : "否", r.mutual ? "互关" : "单向粉我", r.note, safe(`https://x.com/${r.account}`)

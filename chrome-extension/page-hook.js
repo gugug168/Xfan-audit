@@ -468,6 +468,114 @@
     }
   }
 
+  // 自己账号的粉丝/关注总数只出现在页面 SSR 的 __INITIAL_STATE__ 里，网络响应里没有这两个字段。
+  // 不读它，库里 users[me].followers/following 就永远是 0，
+  // 对账的第 4 道保护闸（「本轮看到的人不到主页总数的 90%」）拿不到 expected，永远不生效。
+  let lastProfileSig = "";
+  let cachedInitialState = null;
+  let scriptScanTries = 0;
+
+  // 从 start 开始按大括号配对截出一段 JSON（跳过字符串里的括号与转义）
+  function sliceBalancedJson(s, start) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (c === "\\") { esc = true; continue; }
+        if (c === '"') { inStr = false; continue; }
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === "{") { depth++; continue; }
+      if (c === "}") {
+        depth--;
+        if (depth === 0) return s.slice(start, i + 1);
+      }
+    }
+    return "";
+  }
+
+  // X 在 hydration 之后可能把 window.__INITIAL_STATE__ 删掉，但内联 <script> 节点还在 DOM 里。
+  // 所以先读变量，读不到就退回解析脚本文本；成功后缓存，不再重复扫。
+  function readInitialState() {
+    try {
+      if (window.__INITIAL_STATE__) return window.__INITIAL_STATE__;
+    } catch (e) {}
+    if (cachedInitialState) return cachedInitialState;
+    if (scriptScanTries >= 5) return null;
+    scriptScanTries++;
+    try {
+      const scripts = document.querySelectorAll("script");
+      for (let i = 0; i < scripts.length; i++) {
+        const t = scripts[i].textContent || "";
+        const at = t.indexOf("__INITIAL_STATE__");
+        if (at < 0) continue;
+        const start = t.indexOf("{", at);
+        if (start < 0) continue;
+        const jsonText = sliceBalancedJson(t, start);
+        if (!jsonText) continue;
+        cachedInitialState = JSON.parse(jsonText);
+        return cachedInitialState;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function scanInitialState() {
+    try {
+      const st = readInitialState();
+      const ents = st && st.entities && st.entities.users && st.entities.users.entities;
+      if (!ents) return false;
+      const me = detectMeHandle();
+      if (!me) return false;
+      let hit = null;
+      Object.keys(ents).forEach((key) => {
+        const u = ents[key];
+        if (u && String(u.screen_name || "").toLowerCase() === me) hit = { key, u };
+      });
+      if (!hit) return false;
+      const u = hit.u;
+      const legacy = u.legacy || {};
+      const followers = Number(
+        legacy.followers_count != null ? legacy.followers_count : u.followers_count
+      );
+      // 注意：u.following 是「我有没有关注他」的布尔值，不是关注数；关注数只有 friends_count。
+      const following = Number(u.friends_count != null ? u.friends_count : legacy.friends_count);
+      if (!(followers > 0) && !(following > 0)) return true;
+
+      // 同一组数字只报一次：定时扫描每 2.5 秒跑一次，不能每次都发一遍。
+      const sig = me + "|" + followers + "|" + following;
+      if (sig === lastProfileSig) return true;
+      lastProfileSig = sig;
+
+      const batch = {
+        me,
+        lists: { following: {}, followers: {} },
+        users: {},
+        tweets: {},
+        likes: {},
+        counts: { users: 1, tweets: 0, likes: 0 },
+      };
+      batch.users[me] = {
+        id: String(u.id_str || hit.key || ""),
+        handle: me,
+        name: u.name || (u.core && u.core.name) || "",
+        avatar: String(u.profile_image_url_https || "").replace("_normal.", "_400x400."),
+        followers: followers > 0 ? followers : 0,
+        following: following > 0 ? following : 0,
+        verified: !!(u.is_blue_verified || u.verified),
+        created: u.created_at || "",
+      };
+      window.postMessage({ __xfan_type: "XFAN_BATCH", payload: batch }, "*");
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // 启动时自动把旧版 localStorage["fan_audit_collect_v1"] 迁移进插件无限存储。
   // 迁移成功（后台确认）后记下内容签名，内容没变就不再重复迁移；旧数据本身不删除。
   const MIGRATED_KEY = "fan_audit_collect_v1_migrated_sig";
@@ -517,10 +625,14 @@
   });
 
   window.addEventListener("DOMContentLoaded", () => {
-    setTimeout(migrateLegacyLocalStorage, 1200);
+    setTimeout(() => {
+      migrateLegacyLocalStorage();
+      scanInitialState();
+    }, 1200);
     setInterval(() => {
       scanFollowDom();
       scanAvatarsDom();
+      scanInitialState();
       const me = detectMeHandle();
       if (me && me !== lastMeSent) {
         lastMeSent = me;
